@@ -209,8 +209,18 @@ Will not sync with the server by default, in case the file was important
 Example:
     $ storage rm bills
     """
-    full_path = os.path.join(store, saved_path)
-    command = f"rm -r {full_path}"
+    # may delete .gpg files or directories
+    file_path = os.path.join(store, saved_path) + ".gpg"
+    folder_path = os.path.join(store, saved_path)
+
+    if os.path.exists(file_path):
+        path = file_path
+    elif os.path.exists(folder_path):
+        path = folder_path
+    else:
+        print(f"Could not find {saved_path} in the store")
+        return
+    command = f"rm -r {path}"
     print(command)
     run(command)
 
