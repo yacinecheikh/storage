@@ -1,0 +1,293 @@
+#!/usr/bin/python3
+import os
+import subprocess
+import sys
+
+
+def run(command, stdin=None):
+    # code, stdout, stderr = run(command, stdin)
+    p = subprocess.Popen(command, shell=True, stdin=subprocess.PIPE if stdin is not None else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if stdin is not None:
+        p.stdin.write(stdin.encode())
+    stdout, stderr = p.communicate()
+    code = p.returncode
+    return code, stdout.decode(), stderr.decode()
+
+
+#print(run("ls"))
+#print(run("cat", stdin="hello"))
+
+
+store = os.environ["HOME"] + "/.file-store"
+#print(store)
+gpg_id_file = store + "/.gpg-id"
+server_file = store + "/.server"
+
+
+def init_fs():
+    if not os.path.exists(store):
+        run(f"mkdir -p {store}")
+
+
+init_fs()
+
+
+def prompt(question):
+    answer = input(question + " [y/N]")
+    if answer.startswith("y"):
+        return True
+    else:
+        return False
+
+
+# path manipulation
+
+def mkpath(path):
+    # create parent directories ?
+    full_path = os.path.join(store, path) + ".gpg"
+    directory = os.path.dirname(full_path)
+    #print(directory)
+    code, out, err = run(f"mkdir -p {directory}")
+    if code != 0:
+        print(f"Error creating {directory}")
+        return False
+    #print(code, out, err)
+
+
+    # override the existing file ?
+    if os.path.exists(full_path):
+        if os.path.isdir(full_path):
+            print(f"Error: {path} is a directory, cannot override")
+            return False
+        if prompt(f"{path} already exists. Override ?"):
+            os.remove(full_path)
+        else:
+            return False
+    # success
+    return True
+
+
+def help(cmd=None):
+    """
+List commands and display useage for commands
+Useage:
+    storage help
+    storage help <command>
+    """
+    if cmd in commands:
+        print(commands[cmd].__doc__.strip())
+    else:
+        keys = [f"    {cmd}" for cmd in commands]
+        keys = "\n".join(keys)
+        print(f"""
+Commands:
+{keys}
+""".strip())
+
+
+def server(url=None):
+    """
+Configure the server to synchronize with
+Useage:
+    storage server
+    storage server <server>:<path>
+
+Example:
+    $ storage server user@vps:storage
+    $ storage server
+    user@vps:storage
+    """
+    if url is not None:
+        with open(server_file, "w") as f:
+            f.write(url)
+            f.write("\n")
+    else:
+        # print current key used if configured
+        if os.path.exists(server_file):
+            with open(server_file) as f:
+                print(f.read(), end="")
+
+
+def key(key_name=None):
+    """
+Configure the GPG key used to encrypt files
+Useage:
+    storage key <gpg key>
+Example:
+    $ gpg --list-secret-keys
+    sec   rsa3072 2024-11-17 [SC] [expire : 2026-11-17]
+          B67BFC108C51485EC7383408D313E092F41003BA
+    uid          [  ultime ] my name <myname@mail.i2p>
+    ssb   rsa3072 2024-11-17 [E] [expire : 2026-11-17]
+
+    $ storage key myname
+    Using B67BFC108C51485EC7383408D313E092F41003BA my name <myname@mail.i2p>
+    """
+
+    if key_name is not None:
+        # https://stackoverflow.com/questions/70357029/extract-gpg-fingerprint
+        command = f"gpg --list-key {key_name} | sed -n '/^\s/s/\s*//p'"
+        #print(command)
+        code, out, err = run(command)
+        if code != 0:
+            print(f"error getting the key with gpg --list-key {key_name}")
+            sys.exit(1)
+
+        key_fingerprint = out
+
+        with open(gpg_id_file, "w") as f:
+            f.write(key_fingerprint)
+    else:
+        # print current key used if configured
+        if os.path.exists(gpg_id_file):
+            with open(gpg_id_file) as f:
+                print(f.read(), end="")
+
+
+# TODONOT: support recursion and directory
+# can easily be scripted with: find . | xargs -I {} storage.py add {} project/{}
+# but cannot be implemented in a storage pre-checked way (to prevent errors during process)
+def save(source, storage_path):
+    """
+Add a new file to the store
+Example:
+    $ ls
+    bill.pdf
+    $ storage save bill.pdf bills/$(date -I).pdf
+    """
+
+    if not os.path.exists(gpg_id_file):
+        print("You need to configure a GPG key to use for encryption first.")
+        return
+    with open(gpg_id_file) as f:
+        fingerprint = f.read().strip()
+    if not mkpath(storage_path):
+        #print("Error creating path in the store")
+        return
+    dest = os.path.join(store, storage_path) + ".gpg"
+    code, out, err = run(f"gpg --encrypt --recipient {fingerprint} --output {dest} {source}")
+    if code == 0:
+        print(f"Saved the file to {dest}")
+
+    # TODO: mkpath on server (assume everything works, warn if sync failed)
+    # TODO: save on server with scp <store>/storage_path.gpg <server>/storage_path.gpg
+
+
+
+
+# TODO: check later if a simple recursive directory processing is possible
+def get(saved_path, dest=None):
+    """
+Retrieve a file from the store
+Example:
+    $ storage get bills/2024-11-18.pdf
+    $ ls
+    2024-11-18.pdf
+    """
+    full_path = os.path.join(store, saved_path)
+    if dest is None and not os.path.exists(os.path.basename(saved_path)):
+        dest = os.path.basename(saved_path)
+    if dest is None:
+        # random name
+        extension = os.path.splitext(saved_path)[1]
+        while True:
+            _, name, _ = run("openssl rand -hex 10")
+            name = f"{name.strip()}{extension}"
+            if not os.path.exists(name):
+                dest = name
+                break
+    command = f"gpg --decrypt --output {dest} {full_path}.gpg"
+    print(command)
+    code, out, err = run(command)
+    #print(code, out, err)
+
+
+def rm(saved_path):
+    """
+Remove a file or directory from the storage
+Will not sync with the server by default, in case the file was important
+Example:
+    $ storage rm bills
+    """
+    # may delete .gpg files or directories
+    file_path = os.path.join(store, saved_path) + ".gpg"
+    folder_path = os.path.join(store, saved_path)
+
+    if os.path.exists(file_path):
+        path = file_path
+    elif os.path.exists(folder_path):
+        path = folder_path
+    else:
+        print(f"Could not find {saved_path} in the store")
+        return
+    command = f"rm -r {path}"
+    print(command)
+    run(command)
+
+
+# TODO? : partial sync (push <folder>)
+def push():
+    """
+Erase the remote file store on the server and override it with the local store
+Useage:
+    storage push
+    """
+    if not os.path.exists(server_file):
+        print("You need to configure a server address first.")
+        return
+    with open(server_file) as f:
+        server, server_store = f.read().strip().split(":")
+    code, out, err = run(f"ssh {server} 'cd {server_store} && rm -r ./*'")
+    if err.strip() == "rm: cannot remove './*': No such file or directory":
+        print("Nothing to clean on the remote server")
+    elif code != 0:
+        print(code, out, err)
+    code, out, err = run(f"scp -r {store}/* {server}:{server_store}/")
+    if err.strip() == f'scp: stat local "{store}/*": No such file or directory':
+        print("Nothing to synchronize with the server")
+    elif code != 0:
+        print(code, out, err)
+
+
+def pull():
+    """
+Erase the local file store on the machine and override it with the files in the remote store
+Useage:
+    storage pull
+    """
+    if not os.path.exists(server_file):
+        print("You need to configure a server address first.")
+        return
+    with open(server_file) as f:
+        server, server_store = f.read().strip().split(":")
+    code, out, err = run(f"cd {store} && rm -r ./*")
+    if code == 1 and "'./*'" in err:
+        # error message about ./* not being a file (happens when no file to remove exist)
+        print("Nothing to remove locally")
+    elif code != 0:
+        print(code, out, err)
+    code, out, err = run(f"scp -r {server}:{server_store}/* {store}/")
+    if err.strip() == f"scp: {server_store}/*: No such file or directory":
+        print("Nothing to pull from the server")
+    elif code != 0:
+        print(code, out, err)
+
+
+commands = {
+    "help": help,
+    "server": server,
+    "key": key,
+    "save": save,
+    "get": get,
+    "rm": rm,
+    "push": push,
+    "pull": pull,
+}
+
+if len(sys.argv) == 1:
+    help()
+else:
+    cmd = sys.argv[1]
+    args = sys.argv[2:]
+    commands[cmd](*args)
+
