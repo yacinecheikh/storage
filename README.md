@@ -1,7 +1,3 @@
-(TODO: licence en premier)
-(GPL)
-
-
 # Storage
 
 A pass-like encrypted and remotely synchronized file storage
