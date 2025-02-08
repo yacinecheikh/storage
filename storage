@@ -144,10 +144,12 @@ Example:
                 print(f.read(), end="")
 
 
+# TODO: support implicit storage_path (and add as suffix if storage_path ends with "/")
+
 # TODONOT: support recursion and directory
 # can easily be scripted with: find . | xargs -I {} storage.py add {} project/{}
 # but cannot be implemented in a storage pre-checked way (to prevent errors during process)
-def save(source, storage_path):
+def save(source, storage_path=None):
     """
 Add a new file to the store
 Example:
@@ -155,6 +157,17 @@ Example:
     bill.pdf
     $ storage save bill.pdf bills/$(date -I).pdf
     """
+
+    # arg processing
+    if storage_path is None:
+        storage_path = source
+    if storage_path.endswith("/") and storage_path != source:
+        storage_path += os.path.basename(source)
+    # TODO:
+    # edge case: storage save <file>/ -> creates a <file> directory
+    # TODO:
+    # save folders ?
+    # can do this: for file in $(ls); do ./storage save $file <prefix>/$file; done
 
     if not os.path.exists(gpg_id_file):
         print("You need to configure a GPG key to use for encryption first.")
@@ -272,6 +285,25 @@ Useage:
     elif code != 0:
         print(code, out, err)
 
+def ls(prefix=None):
+    """
+List stored files
+Example:
+    $ storage ls
+    bill.pdf
+    $ storage get bill.pdf
+    $ ls
+    bill.pdf
+    """
+    path = "~/.file-store"
+    if prefix is not None:
+        path += f"/{prefix}"
+        # use tree to list files, remove the last 2 lines, and remove .gpg extensions
+    code, out, err = run(f"tree {path} | tail -n +2 | sed -E 's/\.gpg(\x1B\[[0-9]+m)?( ->|$)/\1\2/g'")
+    if code != 0:
+        print("Could not access the file storage. Does ~/.file-store exist ?")
+    print(out)
+
 
 commands = {
     "help": help,
@@ -282,6 +314,7 @@ commands = {
     "rm": rm,
     "push": push,
     "pull": pull,
+    "ls": ls,
 }
 
 if len(sys.argv) == 1:
